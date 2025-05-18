@@ -326,6 +326,12 @@ class DQNAgent:
         self.target_model.load_state_dict(self.model.state_dict())
 
     def train(self, episodes=500, render_interval=50):
+        if self.best_path is None:
+            self.best_path = [self.env.start]
+            self.best_distance = np.linalg.norm(
+                np.array(self.env.start[:2]) -
+                np.array(self.env.goal[:2])
+            )
         rewards_history = []
         steps_history = []
         last_episode_rewards = []  # 新增：记录最后回合的奖励
@@ -506,13 +512,22 @@ class DQNAgent:
         plt.show()
 
     def save_model(self, path):
-        torch.save(self.model.state_dict(), path)
+        torch.save({
+            'online': self.model.state_dict(),
+            'target': self.target_model.state_dict(),
+            'best_path': self.best_path,  # 新增路径保存
+            'best_distance': self.best_distance,
+            'best_reward': self.best_reward
+        }, path)
 
     def load_model(self, path):
-        # 添加 weights_only=True 参数
-        self.model.load_state_dict(torch.load(path, map_location='cpu', weights_only=True))
-        self.target_model.load_state_dict(torch.load(path, map_location='cpu', weights_only=True))
-
+        checkpoint = torch.load(path)
+        self.model.load_state_dict(checkpoint['online'])
+        self.target_model.load_state_dict(checkpoint['target'])
+        # 恢复路径状态
+        self.best_path = checkpoint.get('best_path', None)
+        self.best_distance = checkpoint.get('best_distance', float('inf'))
+        self.best_reward = checkpoint.get('best_reward', -float('inf'))
     def get_path(self, max_steps=50000):
         original_epsilon = self.epsilon
         self.epsilon = 0  # 禁用探索，完全依赖策略网络
@@ -737,22 +752,22 @@ if __name__ == "__main__":
 
         # 调用可视化
         plot_comparison(obstacle_map, all_paths, metadata)
-        # # 生成表格数据
-        # tables = []
-        # if path_2d:
-        #     tables.append(('A* 2D', generate_table(path_2d, metadata, data)))
-        # if path_3d:
-        #     tables.append(('A* 3D', generate_table(path_3d, metadata, data, is_3d=True)))
-        # if dqn_2d_result:
-        #     tables.append(('DQN 2D', generate_table(dqn_2d_result, metadata, data)))
-        # if dqn_3d_result:
-        #     tables.append(('DQN 3D', generate_table(dqn_3d_result, metadata, data, is_3d=True)))
-        #
-        # # 导出CSV
-        # i=0
-        # for name, table in tables:
-        #     i+=1
-        #     export_csv(table, f'{i}_path.csv')
+        # 生成表格数据
+        tables = []
+        if path_2d:
+            tables.append(('A* 2D', generate_table(path_2d, metadata, data)))
+        if path_3d:
+            tables.append(('A* 3D', generate_table(path_3d, metadata, data, is_3d=True)))
+        if dqn_2d_result:
+            tables.append(('DQN 2D', generate_table(dqn_2d_result, metadata, data)))
+        if dqn_3d_result:
+            tables.append(('DQN 3D', generate_table(dqn_3d_result, metadata, data, is_3d=True)))
+
+        # 导出CSV
+        i=0
+        for name, table in tables:
+            i+=1
+            export_csv(table, f'{i}_path.csv')
 
 
     except Exception as e:
