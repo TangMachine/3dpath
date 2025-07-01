@@ -129,16 +129,14 @@ class ImprovedPathPlanningEnv:
         # 获取地图尺寸
         self.map_height, self.map_width = obstacle_map.shape
 
-        # 初始化三张表格
+        # 初始化两张表格（减少输入维度）
         self.current_position_table = np.zeros((self.map_height, self.map_width), dtype=np.float32)
-        self.goal_position_table = np.zeros((self.map_height, self.map_width), dtype=np.float32)
-        self.discovered_obstacles_table = np.zeros((self.map_height, self.map_width), dtype=np.float32)
+        # 合并目标位置和障碍物发现信息到一张表格中
+        # 编码方式: 0.0=空地, 1.0=发现的障碍物, 2.0=目标位置
+        self.obstacles_goal_table = np.zeros((self.map_height, self.map_width), dtype=np.float32)
 
-        # 设置目标位置表（固定）
-        if self.is_3d:
-            self.goal_position_table[goal[0], goal[1]] = 15.0
-        else:
-            self.goal_position_table[goal[0], goal[1]] = 1.0
+        # 设置目标位置（固定）
+        self.obstacles_goal_table[goal[0], goal[1]] = 2.0
 
         if self.is_3d:
             self.actions_3d = []
@@ -175,8 +173,12 @@ class ImprovedPathPlanningEnv:
         else:
             self.current_position_table[self.current_pos[0], self.current_pos[1]] = 1.0
 
-        # 重置障碍物发现表
-        self.discovered_obstacles_table.fill(0.0)
+        # 重置障碍物发现（保持目标位置不变）
+        # 先保存目标位置
+        goal_value = self.obstacles_goal_table[self.goal[0], self.goal[1]]
+        self.obstacles_goal_table.fill(0.0)
+        # 恢复目标位置
+        self.obstacles_goal_table[self.goal[0], self.goal[1]] = goal_value
 
         # 初始化时更新周围的障碍物
         if self.is_3d:
@@ -188,13 +190,12 @@ class ImprovedPathPlanningEnv:
 
     def get_state(self):
         """
-        返回三张表格的组合作为状态
-        形状: (3, map_height, map_width)
+        返回两张表格的组合作为状态
+        形状: (2, map_height, map_width)
         """
         state = np.stack([
             self.current_position_table,
-            self.goal_position_table,
-            self.discovered_obstacles_table
+            self.obstacles_goal_table
         ], axis=0)
         return state
 
@@ -202,6 +203,7 @@ class ImprovedPathPlanningEnv:
         """
         更新发现的障碍物表格
         检查周围8个方向的格子，如果是障碍物则标记
+        注意：避免覆盖目标位置的标记
         """
         directions = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
 
@@ -209,7 +211,9 @@ class ImprovedPathPlanningEnv:
             nx, ny = x + dx, y + dy
             if (0 <= nx < self.map_height and 0 <= ny < self.map_width):
                 if self.grid[nx, ny] == 1:  # 如果是障碍物
-                    self.discovered_obstacles_table[nx, ny] += 1.0
+                    # 只有当不是目标位置时才标记为障碍物
+                    if not (nx == self.goal[0] and ny == self.goal[1]):
+                        self.obstacles_goal_table[nx, ny] = 1.0
 
     def get_valid_actions(self):
         """
@@ -231,8 +235,8 @@ class ImprovedPathPlanningEnv:
                 if nz > self.max_z:
                     continue
 
-                # 检查已发现的障碍物
-                if self.discovered_obstacles_table[nx, ny] >= 1.0:
+                # 检查已发现的障碍物（值为1.0表示障碍物，2.0表示目标）
+                if self.obstacles_goal_table[nx, ny] == 1.0:
                     # 如果是3D环境，检查是否可以飞越障碍物
                     if self.elevation_data is not None:
                         obstacle_height = self.elevation_data[nx, ny]
@@ -253,8 +257,8 @@ class ImprovedPathPlanningEnv:
                 if not (0 <= nx < self.map_height and 0 <= ny < self.map_width):
                     continue
 
-                # 检查已发现的障碍物
-                if self.discovered_obstacles_table[nx, ny] >= 1.0:
+                # 检查已发现的障碍物（值为1.0表示障碍物，2.0表示目标）
+                if self.obstacles_goal_table[nx, ny] == 1.0:
                     continue  # 2D环境中不能通过障碍物
 
                 # 如果通过所有检查，这个action是有效的
@@ -354,10 +358,10 @@ class ImprovedDQN(nn.Module):
     def __init__(self, map_height, map_width, output_dim, is_3d=False):
         super(ImprovedDQN, self).__init__()
 
-        # 卷积层处理三张表格输入 (3, map_height, map_width)
+        # 卷积层处理两张表格输入 (2, map_height, map_width)
         self.conv_layers = nn.Sequential(
-            # 第一层卷积: 3通道 -> 16通道
-            nn.Conv2d(3, 16, kernel_size=7, stride=2, padding=3),
+            # 第一层卷积: 2通道 -> 16通道
+            nn.Conv2d(2, 16, kernel_size=7, stride=2, padding=3),
             nn.ReLU(inplace=True),
             nn.MaxPool2d(kernel_size=2, stride=2),
 
@@ -392,7 +396,7 @@ class ImprovedDQN(nn.Module):
         )
 
     def forward(self, x):
-        # x的形状应该是 (batch_size, 3, map_height, map_width)
+        # x的形状应该是 (batch_size, 2, map_height, map_width)
         x = self.conv_layers(x)
         x = self.classifier(x)
         return x
@@ -743,12 +747,12 @@ class ImprovedDQNAgent:
 
     def visualize_state_tables(self, state=None):
         """
-        可视化三张状态表格
+        可视化两张状态表格
         """
         if state is None:
             state = self.env.get_state()
 
-        fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+        fig, axes = plt.subplots(1, 2, figsize=(12, 5))
 
         # 当前位置表
         axes[0].imshow(state[0], cmap='Reds', origin='upper')
@@ -756,17 +760,18 @@ class ImprovedDQNAgent:
         axes[0].set_xlabel('Column')
         axes[0].set_ylabel('Row')
 
-        # 目标位置表
-        axes[1].imshow(state[1], cmap='Greens', origin='upper')
-        axes[1].set_title('Goal Position Table')
+        # 合并的障碍物和目标位置表
+        # 使用自定义colormap来区分不同值
+        # 0.0=空地(白色), 1.0=障碍物(蓝色), 2.0=目标(绿色)
+        import matplotlib.colors as mcolors
+        colors = ['white', 'blue', 'green']
+        n_bins = 3
+        cmap = mcolors.ListedColormap(colors, name='obstacles_goal', N=n_bins)
+        
+        axes[1].imshow(state[1], cmap=cmap, origin='upper', vmin=0, vmax=2)
+        axes[1].set_title('Obstacles & Goal Table\n(Blue=Obstacles, Green=Goal)')
         axes[1].set_xlabel('Column')
         axes[1].set_ylabel('Row')
-
-        # 发现的障碍物表
-        axes[2].imshow(state[2], cmap='Blues', origin='upper')
-        axes[2].set_title('Discovered Obstacles Table')
-        axes[2].set_xlabel('Column')
-        axes[2].set_ylabel('Row')
 
         plt.tight_layout()
         plt.show()
@@ -800,8 +805,8 @@ class ImprovedDQNAgent:
         # 可视化当前位置周围的障碍物
         fig, ax = plt.subplots(1, 1, figsize=(8, 8))
 
-        # 显示发现的障碍物表
-        obstacle_view = state[2].copy()
+        # 显示合并的障碍物和目标表
+        obstacle_view = state[1].copy()
 
         # 标记当前位置
         if self.is_3d:
