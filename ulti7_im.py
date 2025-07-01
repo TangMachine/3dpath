@@ -125,6 +125,8 @@ class ImprovedPathPlanningEnv:
         self.current_pos = start
         self.goal_pos = goal
         self.max_z = max_z
+        self.collision_count = 0
+        self.episode_collisions = 0
 
         # 获取地图尺寸
         self.map_height, self.map_width = obstacle_map.shape
@@ -173,6 +175,7 @@ class ImprovedPathPlanningEnv:
 
         # 重置当前位置表
         self.current_position_table.fill(0.0)
+        self.episode_collisions = 0
         if self.is_3d:
             self.current_position_table[self.current_pos[0], self.current_pos[1]] = self.current_pos[2]
         else:
@@ -250,6 +253,7 @@ class ImprovedPathPlanningEnv:
         done = False
         reward = 0
         prev_position = np.array(self.current_pos[:2])
+        collision_occurred = False
 
         if self.is_3d:
             dx, dy, dz = self.actions_3d[action]
@@ -276,8 +280,10 @@ class ImprovedPathPlanningEnv:
                         self.current_pos = (nx, ny, nz)
                     else:
                         reward = -100
+                        collision_occurred = True
                 else:
                     reward = -100
+                    collision_occurred = True
             elif self.grid[nx, ny] == 3:
                 if self.is_3d:
                     if self.elevation_data[nx, ny] + 10 <= nz:
@@ -304,6 +310,7 @@ class ImprovedPathPlanningEnv:
                 self.current_pos = (nx, ny, nz) if self.is_3d else (nx, ny)
         else:
             reward = -100
+            collision_occurred = True
 
         # 改进奖励设计
         new_position = np.array(self.current_pos[:2])
@@ -323,15 +330,18 @@ class ImprovedPathPlanningEnv:
         if np.array_equal(new_position, target_position):
             reward += 1000
             done = True
+        if collision_occurred:
+            self.collision_count += 1
+            self.episode_collisions += 1
 
-        return self.get_state(), reward, done, {}
+        return self.get_state(), reward, done, {'collision': collision_occurred}
 
 
 class ImprovedDQN(nn.Module):
     def __init__(self, map_height, map_width, output_dim, is_3d=False):
         super(ImprovedDQN, self).__init__()
 
-        # 修改卷积层处理两张表格输入 (2, map_height, map_width)
+        # 卷积层处理三张表格输入 (2, map_height, map_width)
         self.conv_layers = nn.Sequential(
             # 第一层卷积: 2通道 -> 16通道
             nn.Conv2d(2, 16, kernel_size=7, stride=2, padding=3),
@@ -375,6 +385,7 @@ class ImprovedDQN(nn.Module):
         return x
 
 
+
 class ImprovedDQNAgent:
     def __init__(self, env, is_3d=False):
         self.env = env
@@ -391,15 +402,17 @@ class ImprovedDQNAgent:
 
         self.optimizer = optim.Adam(self.model.parameters(), lr=0.0005)
         self.memory = deque(maxlen=10000)
-        self.batch_size = 8  # 减小batch size因为状态空间更大
+        self.batch_size = 64  # 减小batch size因为状态空间更大
         self.gamma = 0.99
         self.epsilon = 1.0
-        self.epsilon_min = 0.01
+        self.epsilon_min = 0.1
         self.epsilon_decay = 0.9995
         self.best_path = None
         self.best_distance = float('inf')
         self.best_reward = -float('inf')
         self.loss_history = []
+        self.total_steps = 0
+        self.target_update_freq = 5000
 
     def act(self, state):
         # 获取当前状态下的有效actions
@@ -467,6 +480,8 @@ class ImprovedDQNAgent:
         success_count = 0
         last_episode_rewards = []
         last_episode_path = []
+        collision_history = []
+        filtered_action_stats = []
 
         for ep in range(episodes):
             if ep == episodes - 1:
@@ -481,10 +496,15 @@ class ImprovedDQNAgent:
             best_reward = 0
             no_improve_count = 0
             episode_losses = []
+            total_collisions = 0
+            filtered_action_count = 0
 
             while not done and steps < 10000:
                 action = self.act(state)
-                next_state, reward, done, _ = self.env.step(action)
+                next_state, reward, done, info = self.env.step(action)
+                # 记录碰撞
+                if info.get('collision', False):
+                    total_collisions += 1
 
                 if ep == episodes - 1:
                     last_episode_rewards.append(reward)
@@ -506,15 +526,21 @@ class ImprovedDQNAgent:
                 state = next_state
                 total_reward += reward
                 steps += 1
+                self.total_steps += 1
                 current_path.append(self.env.current_pos)
 
                 if loss_value > 0:
                     episode_losses.append(loss_value)
 
+                if self.total_steps % self.target_update_freq == 0:
+                    self.update_target()
+
             # 检查是否成功到达目标
             final_pos = np.array(current_path[-1][:2])
             target_pos = np.array(self.env.goal[:2])
             current_distance = np.linalg.norm(final_pos - target_pos)
+            collision_history.append(total_collisions)
+            filtered_action_stats.append(filtered_action_count / steps if steps > 0 else 0)
 
             if done or current_distance < 1.0:
                 success_count += 1
@@ -541,18 +567,20 @@ class ImprovedDQNAgent:
             steps_history.append(steps)
 
             # 每10个episode更新一次target网络
-            if ep % 10 == 0:
-                self.update_target()
+
 
             success_rate = (success_count / (ep + 1)) * 100
             print(f"回合 {ep + 1}/{episodes}, 奖励: {total_reward:.1f}, "
-                  f"步数: {steps}, Epsilon: {self.epsilon:.3f}, "
+                  f"步数: {steps}, 碰撞次数: {total_collisions}, "
+                  f"动作过滤率: {filtered_action_stats[-1]:.2%}, "
+                  f"Epsilon: {self.epsilon:.3f}, "
                   f"成功率: {success_rate:.1f}%")
 
             if ep % render_interval == 0 or ep == episodes - 1:
                 self.plot_progress(rewards_history, steps_history)
 
         final_success_rate = (success_count / episodes) * 100
+        self.plot_collision_stats(collision_history, filtered_action_stats)
 
         training_stats = {
             'success_rate': final_success_rate,
@@ -649,6 +677,46 @@ class ImprovedDQNAgent:
 
         plt.title('Navigation Trajectory', fontsize=14)
         plt.legend()
+        plt.tight_layout()
+        plt.show()
+
+    def plot_collision_stats(self, collisions, filter_rates):
+        plt.figure(figsize=(12, 8))
+
+        # 碰撞次数图表
+        plt.subplot(2, 1, 1)
+        plt.plot(collisions, 'r-', label='碰撞次数')
+        plt.fill_between(range(len(collisions)),
+                         collisions,
+                         color='red', alpha=0.1)
+        plt.ylabel('碰撞次数')
+        plt.title('每回合碰撞次数统计')
+        plt.grid(True, linestyle='--', alpha=0.7)
+
+        # 添加移动平均线
+        window_size = max(1, len(collisions) // 20)
+        moving_avg = np.convolve(collisions, np.ones(window_size) / window_size, mode='valid')
+        plt.plot(range(window_size - 1, len(collisions)), moving_avg,
+                 'b--', linewidth=2, label=f'移动平均 ({window_size}回合)')
+        plt.legend()
+
+        # 动作过滤率图表
+        plt.subplot(2, 1, 2)
+        plt.plot(filter_rates, 'g-', label='动作过滤率')
+        plt.fill_between(range(len(filter_rates)),
+                         filter_rates,
+                         color='green', alpha=0.1)
+        plt.xlabel('回合数')
+        plt.ylabel('过滤率')
+        plt.title('有效动作过滤比例')
+        plt.grid(True, linestyle='--', alpha=0.7)
+
+        # 添加移动平均线
+        moving_avg_filter = np.convolve(filter_rates, np.ones(window_size) / window_size, mode='valid')
+        plt.plot(range(window_size - 1, len(filter_rates)), moving_avg_filter,
+                 'b--', linewidth=2, label=f'移动平均 ({window_size}回合)')
+        plt.legend()
+
         plt.tight_layout()
         plt.show()
 
