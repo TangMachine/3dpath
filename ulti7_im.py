@@ -219,7 +219,7 @@ class ImprovedPathPlanningEnv:
                     # 如果是3D环境，检查是否可以飞越障碍物
                     if self.elevation_data is not None:
                         obstacle_height = self.elevation_data[nx, ny]
-                        if obstacle_height + 5 > nz:  # 如果高度不够飞越
+                        if obstacle_height  > nz:  # 如果高度不够飞越
                             continue
                     else:
                         continue  # 没有高程数据时，不能通过障碍物
@@ -258,12 +258,12 @@ class ImprovedPathPlanningEnv:
         if self.is_3d:
             dx, dy, dz = self.actions_3d[action]
             if dz != 0:
-                reward -= 5
+                reward -= 1
             x, y, z = self.current_pos
             nx, ny, nz = x + dx, y + dy, z + dz * self.delta_z
             if nz > self.max_z:
                 nz = self.max_z
-                reward -= 20
+                reward -= 5
         else:
             dx, dy = self.actions_2d[action]
             x, y = self.current_pos
@@ -273,20 +273,20 @@ class ImprovedPathPlanningEnv:
         if 0 <= nx < self.grid.shape[0] and 0 <= ny < self.grid.shape[1]:
             if self.grid[nx, ny] == 1:
                 if self.is_3d:
-                    if self.elevation_data[nx, ny] + 5 <= nz:
+                    if self.elevation_data[nx, ny]  <= nz:
                         # 更新当前位置表
                         self.current_position_table.fill(0.0)
                         self.current_position_table[nx, ny] = 1.0
                         self.current_pos = (nx, ny, nz)
                     else:
-                        reward = -100
+                        reward = -10
                         collision_occurred = True
                 else:
-                    reward = -100
+                    reward = -10
                     collision_occurred = True
             elif self.grid[nx, ny] == 3:
                 if self.is_3d:
-                    if self.elevation_data[nx, ny] + 10 <= nz:
+                    if self.elevation_data[nx, ny] <= nz:
                         # 更新当前位置表
                         self.current_position_table.fill(0.0)
                         self.current_position_table[nx, ny] = 1.0
@@ -309,7 +309,7 @@ class ImprovedPathPlanningEnv:
                 self.current_position_table[nx, ny] = 1.0
                 self.current_pos = (nx, ny, nz) if self.is_3d else (nx, ny)
         else:
-            reward = -100
+            reward = -10
             collision_occurred = True
 
         # 改进奖励设计
@@ -322,9 +322,9 @@ class ImprovedPathPlanningEnv:
         distance_reward = (prev_dist - new_dist) * 5
 
         # 基础生存奖励
-        survival_penalty = -0.5
+        survival_penalty = -0.05
 
-        reward = distance_reward + survival_penalty
+        reward += distance_reward + survival_penalty
 
         # 终点奖励
         if np.array_equal(new_position, target_position):
@@ -402,17 +402,17 @@ class ImprovedDQNAgent:
 
         self.optimizer = optim.Adam(self.model.parameters(), lr=0.0005)
         self.memory = deque(maxlen=10000)
-        self.batch_size = 64  # 减小batch size因为状态空间更大
+        self.batch_size = 8 # 减小batch size因为状态空间更大
         self.gamma = 0.99
         self.epsilon = 1.0
         self.epsilon_min = 0.1
-        self.epsilon_decay = 0.9995
+        self.epsilon_decay = 0.995
         self.best_path = None
         self.best_distance = float('inf')
         self.best_reward = -float('inf')
         self.loss_history = []
         self.total_steps = 0
-        self.target_update_freq = 5000
+        self.target_update_freq = 2000
 
     def act(self, state):
         # 获取当前状态下的有效actions
@@ -518,9 +518,9 @@ class ImprovedDQNAgent:
                 else:
                     no_improve_count += 1
 
-                # if no_improve_count > 20:
-                #     self.epsilon = min(0.5, self.epsilon + 0.1)
-                #     no_improve_count = 0
+                if no_improve_count > 20:
+                    self.epsilon = min(0.5, self.epsilon + 0.1)
+                    no_improve_count = 0
 
                 loss_value = self.replay()
                 state = next_state
