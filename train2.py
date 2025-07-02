@@ -1,25 +1,25 @@
-from ulti2 import *
+from ulti7_im import *
 import time
 
 if __name__ == "__main__":
     try:
         # 1) Read data
-        data, metadata = read_asc_file('output_dem.asc')
+        data, metadata = read_asc_file('output_dem4.asc')
 
         # 2) Create 2D obstacle map for standard approach
         obstacle_map = create_obstacle_map(data, metadata)
 
         # 3) Define start/end in geo coords, then convert to row/col
-        start_geo = (metadata['xllcorner'] + 200 * metadata['cellsize'],
-                     metadata['yllcorner'] + (metadata['nrows'] - 300 - 1) * metadata['cellsize'])
-        end_geo = (metadata['xllcorner'] + 700 * metadata['cellsize'],
-                   metadata['yllcorner'] + (metadata['nrows'] - 1800 - 1) * metadata['cellsize'])
+        start_geo = (metadata['xllcorner'] + 10 * metadata['cellsize'],
+                     metadata['yllcorner'] + (metadata['nrows'] - 10 - 1) * metadata['cellsize'])
+        end_geo = (metadata['xllcorner'] + 150 * metadata['cellsize'],
+                   metadata['yllcorner'] + (metadata['nrows'] - 150 - 1) * metadata['cellsize'])
         start_row, start_col = geo_to_grid(*start_geo, metadata)
         end_row, end_col = geo_to_grid(*end_geo, metadata)
 
         delta_z = 1
-        start_3d = (start_row, start_col, data[start_row, start_col] + 5)
-        end_3d = (end_row, end_col, data[end_row, end_col] + 5)
+        start_3d = (start_row, start_col, data[start_row, start_col] + 3)
+        end_3d = (end_row, end_col, data[end_row, end_col] + 3)
 
         s = f'MODEL 🚀 torch {torch.__version__} '
         n = torch.cuda.device_count()
@@ -54,6 +54,33 @@ if __name__ == "__main__":
             path_result = agent.get_path()
             # 计算路径长度
             path_length = calculate_path_length(path_result['path'], metadata, is_3d)
+            if path_result['path']:
+                if is_3d:
+                    start_point = path_result['path'][0]
+                    end_point = path_result['path'][-1]
+                    print(f"起点坐标: (行={start_point[0]}, 列={start_point[1]}, 高度={start_point[2]:.2f}m)")
+                    print(f"终点坐标: (行={end_point[0]}, 列={end_point[1]}, 高度={end_point[2]:.2f}m)")
+
+                    # 新增：绘制高度变化图（仅3D）
+                    heights = [p[2] for p in path_result['path']]
+                    plt.figure(figsize=(10, 5))
+                    plt.plot(heights, 'b-', linewidth=2)
+                    plt.scatter(0, heights[0], c='g', s=100, label='start')
+                    plt.scatter(len(heights) - 1, heights[-1], c='r', s=100, label='end')
+                    plt.xlabel('step')
+                    plt.ylabel('altitude (m)')
+                    plt.title('3D DQN altitude with step')
+                    plt.grid(True, linestyle='--', alpha=0.7)
+                    plt.legend()
+                    plt.tight_layout()
+                    plt.show()
+                else:
+                    start_point = path_result['path'][0]
+                    end_point = path_result['path'][-1]
+                    print(f"起点坐标: (行={start_point[0]}, 列={start_point[1]})")
+                    print(f"终点坐标: (行={end_point[0]}, 列={end_point[1]})")
+            else:
+                print("警告: 未找到有效路径")
             # 打印训练统计信息
             print(f"\n{'=' * 50}")
             print(f"{'3D' if is_3d else '2D'} DQN 训练完成统计:")
@@ -101,6 +128,19 @@ if __name__ == "__main__":
 
             # 计算路径长度
             path_length = calculate_path_length(layered_result['path'], metadata, is_3d=False)
+            if layered_result['path']:
+                start_point = layered_result['path'][0]
+                end_point = layered_result['path'][-1]
+                # 获取起点和终点的高度（地面高度+3米）
+                start_height = data[start_point[0], start_point[1]] +  + 5
+                end_height = data[end_point[0], end_point[1]] +  + 5
+
+
+                print(
+                    f"分层 {lmin}-{lmax}m 起点坐标: (行={start_point[0]}, 列={start_point[1]}, 高度={start_height:.2f}m)")
+                print(f"分层 {lmin}-{lmax}m 终点坐标: (行={end_point[0]}, 列={end_point[1]}, 高度={end_height:.2f}m)")
+            else:
+                print(f"分层 {lmin}-{lmax}m 警告: 未找到有效路径")
 
             # 打印训练统计信息
             print(f"\n{'=' * 50}")
