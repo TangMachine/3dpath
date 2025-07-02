@@ -115,16 +115,17 @@ def calculate_path_length(path, metadata, is_3d=False):
 ########################################################
 
 class ImprovedPathPlanningEnv:
-    def __init__(self, obstacle_map, start, goal, is_3d=False, elevation_data=None, delta_z=5, max_z=150):
+    def __init__(self, obstacle_map, start, goal, is_3d=False, elevation_data=None, delta_z=5, max_z=150,min_z=10):
         self.grid = obstacle_map
-        self.start = start
-        self.goal = goal
+        self.start = (start[0],start[1],min_z)
+        self.goal = (goal[0],goal[1],min_z)
         self.is_3d = is_3d
         self.elevation_data = elevation_data
         self.delta_z = delta_z
-        self.current_pos = start
-        self.goal_pos = goal
+        self.current_pos = (start[0],start[1],min_z)
+        self.goal_pos = (goal[0],goal[1],min_z)
         self.max_z = max_z
+        self.min_z = min_z
         self.collision_count = 0
         self.episode_collisions = 0
 
@@ -204,25 +205,25 @@ class ImprovedPathPlanningEnv:
             x, y, z = self.current_pos
 
             for action_idx, (dx, dy, dz) in enumerate(self.actions_3d):
-                nx, ny, nz = x + dx, y + dy, z + dz * self.delta_z
-
-                # 检查边界
-                if not (0 <= nx < self.map_height and 0 <= ny < self.map_width):
-                    continue
-
-                # 检查高度限制
-                if nz > self.max_z:
-                    continue
-
-                # 检查障碍物（负值表示障碍物）
-                if self.prior_knowledge_table[nx, ny] < 0:
-                    # 如果是3D环境，检查是否可以飞越障碍物
-                    if self.elevation_data is not None:
-                        obstacle_height = self.elevation_data[nx, ny]
-                        if obstacle_height  > nz:  # 如果高度不够飞越
-                            continue
-                    else:
-                        continue  # 没有高程数据时，不能通过障碍物
+                # nx, ny, nz = x + dx, y + dy, z + dz * self.delta_z
+                #
+                # # 检查边界
+                # if not (0 <= nx < self.map_height and 0 <= ny < self.map_width):
+                #     continue
+                #
+                # # 检查高度限制
+                # if nz > self.max_z:
+                #     continue
+                #
+                # # 检查障碍物（负值表示障碍物）
+                # if self.prior_knowledge_table[nx, ny] < 0:
+                #     # 如果是3D环境，检查是否可以飞越障碍物
+                #     if self.elevation_data is not None:
+                #         obstacle_height = self.elevation_data[nx, ny]
+                #         if obstacle_height  > nz:  # 如果高度不够飞越
+                #             continue
+                #     else:
+                #         continue  # 没有高程数据时，不能通过障碍物
 
                 # 如果通过所有检查，这个action是有效的
                 valid_actions.append(action_idx)
@@ -230,15 +231,15 @@ class ImprovedPathPlanningEnv:
             x, y = self.current_pos
 
             for action_idx, (dx, dy) in enumerate(self.actions_2d):
-                nx, ny = x + dx, y + dy
-
-                # 检查边界
-                if not (0 <= nx < self.map_height and 0 <= ny < self.map_width):
-                    continue
-
-                # 检查障碍物（负值表示障碍物）
-                if self.prior_knowledge_table[nx, ny] < 0:
-                    continue  # 2D环境中不能通过障碍物
+                # nx, ny = x + dx, y + dy
+                #
+                # # 检查边界
+                # if not (0 <= nx < self.map_height and 0 <= ny < self.map_width):
+                #     continue
+                #
+                # # 检查障碍物（负值表示障碍物）
+                # if self.prior_knowledge_table[nx, ny] < 0:
+                #     continue  # 2D环境中不能通过障碍物
 
                 # 如果通过所有检查，这个action是有效的
                 valid_actions.append(action_idx)
@@ -252,18 +253,21 @@ class ImprovedPathPlanningEnv:
     def step(self, action):
         done = False
         reward = 0
-        prev_position = np.array(self.current_pos[:2])
+        prev_position = np.array(self.current_pos[:3])
         collision_occurred = False
 
         if self.is_3d:
             dx, dy, dz = self.actions_3d[action]
             if dz != 0:
-                reward -= 1
+                reward -= 5
             x, y, z = self.current_pos
             nx, ny, nz = x + dx, y + dy, z + dz * self.delta_z
             if nz > self.max_z:
                 nz = self.max_z
-                reward -= 5
+                reward -= 15
+            elif nz < self.min_z:
+                nz = self.min_z
+                reward -= 15
         else:
             dx, dy = self.actions_2d[action]
             x, y = self.current_pos
@@ -281,9 +285,12 @@ class ImprovedPathPlanningEnv:
                     else:
                         reward = -10
                         collision_occurred = True
+                        nx ,ny , nz = self.current_pos  # 保持当前位置不变
                 else:
                     reward = -10
                     collision_occurred = True
+                    nx,ny = self.current_pos  # 保持当前位置不变
+
             elif self.grid[nx, ny] == 3:
                 if self.is_3d:
                     if self.elevation_data[nx, ny] <= nz:
@@ -292,11 +299,11 @@ class ImprovedPathPlanningEnv:
                         self.current_position_table[nx, ny] = 1.0
                         self.current_pos = (nx, ny, nz)
                     else:
-                        reward = -5
+                        reward = -10
+                        collision_occurred = True
+                        nx, ny, nz = self.current_pos  # 保持当前位置不变
                         # 更新当前位置表
-                        self.current_position_table.fill(0.0)
-                        self.current_position_table[nx, ny] = 1.0
-                        self.current_pos = (nx, ny, nz)
+
                 else:
                     reward = -5
                     # 更新当前位置表
@@ -313,13 +320,13 @@ class ImprovedPathPlanningEnv:
             collision_occurred = True
 
         # 改进奖励设计
-        new_position = np.array(self.current_pos[:2])
-        target_position = np.array(self.goal_pos[:2])
+        new_position = np.array(self.current_pos[:3])
+        target_position = np.array(self.goal_pos[:3])
 
         # 距离变化奖励
         prev_dist = np.linalg.norm(prev_position - target_position)
         new_dist = np.linalg.norm(new_position - target_position)
-        distance_reward = (prev_dist - new_dist) * 5
+        distance_reward = (prev_dist - new_dist) * 15
 
         # 基础生存奖励
         survival_penalty = -0.05
@@ -328,7 +335,7 @@ class ImprovedPathPlanningEnv:
 
         # 终点奖励
         if np.array_equal(new_position, target_position):
-            reward += 1000
+            reward += 2000
             done = True
         if collision_occurred:
             self.collision_count += 1
@@ -471,8 +478,8 @@ class ImprovedDQNAgent:
         if self.best_path is None:
             self.best_path = [self.env.start]
             self.best_distance = np.linalg.norm(
-                np.array(self.env.start[:2]) -
-                np.array(self.env.goal[:2])
+                np.array(self.env.start[:3]) -
+                np.array(self.env.goal[:3])
             )
 
         rewards_history = []
@@ -536,8 +543,8 @@ class ImprovedDQNAgent:
                     self.update_target()
 
             # 检查是否成功到达目标
-            final_pos = np.array(current_path[-1][:2])
-            target_pos = np.array(self.env.goal[:2])
+            final_pos = np.array(current_path[-1][:3])
+            target_pos = np.array(self.env.goal[:3])
             current_distance = np.linalg.norm(final_pos - target_pos)
             collision_history.append(total_collisions)
             filtered_action_stats.append(filtered_action_count / steps if steps > 0 else 0)
@@ -685,30 +692,30 @@ class ImprovedDQNAgent:
 
         # 碰撞次数图表
         plt.subplot(2, 1, 1)
-        plt.plot(collisions, 'r-', label='碰撞次数')
+        plt.plot(collisions, 'r-', label='collison number')
         plt.fill_between(range(len(collisions)),
                          collisions,
                          color='red', alpha=0.1)
-        plt.ylabel('碰撞次数')
-        plt.title('每回合碰撞次数统计')
+        plt.ylabel('collison number')
+        plt.title('per episode collison number')
         plt.grid(True, linestyle='--', alpha=0.7)
 
         # 添加移动平均线
         window_size = max(1, len(collisions) // 20)
         moving_avg = np.convolve(collisions, np.ones(window_size) / window_size, mode='valid')
         plt.plot(range(window_size - 1, len(collisions)), moving_avg,
-                 'b--', linewidth=2, label=f'移动平均 ({window_size}回合)')
+                 'b--', linewidth=2, label=f'per ({window_size} episode)')
         plt.legend()
 
         # 动作过滤率图表
         plt.subplot(2, 1, 2)
-        plt.plot(filter_rates, 'g-', label='动作过滤率')
+        plt.plot(filter_rates, 'g-', label='action filter rate')
         plt.fill_between(range(len(filter_rates)),
                          filter_rates,
                          color='green', alpha=0.1)
-        plt.xlabel('回合数')
-        plt.ylabel('过滤率')
-        plt.title('有效动作过滤比例')
+        plt.xlabel('episode')
+        plt.ylabel('filter rate')
+        plt.title('per episode action filter rate')
         plt.grid(True, linestyle='--', alpha=0.7)
 
         # 添加移动平均线
@@ -754,8 +761,8 @@ class ImprovedDQNAgent:
                 state = next_state
                 steps += 1
 
-            final_pos = np.array(path[-1][:2])
-            target_pos = np.array(self.env.goal[:2])
+            final_pos = np.array(path[-1][:3])
+            target_pos = np.array(self.env.goal[:3])
             success = np.array_equal(final_pos, target_pos)
 
             self.epsilon = original_epsilon
