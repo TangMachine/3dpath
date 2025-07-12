@@ -68,7 +68,7 @@ class FlightEnv:
         self.current_schedule[i], self.current_schedule[j] = self.current_schedule[j], self.current_schedule[i]
 
         # 计算新延误（基于可用起飞时间）
-        delays = np.abs(self.current_schedule - self.available_times)
+        delays = self.available_times-self.current_schedule 
 
         # 更新状态中的延误时长
         new_states = self.states.clone()
